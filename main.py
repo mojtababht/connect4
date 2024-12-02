@@ -1,5 +1,5 @@
 import tensorflow as tf
-
+from chessboard import display
 
 Evaluation = tf.keras.Sequential([
     tf.keras.layers.Conv2D(64, (3, 3), activation='relu', input_shape=(8, 8, 12)),
@@ -18,6 +18,7 @@ Prediction = tf.keras.Sequential([
     tf.keras.layers.Dense(1968, activation='softmax')  # 1968 possible moves
 ])
 
+# b_display = display.start('8/8/8/8/8/8/8/8')
 
 
 def get_combined_model():
@@ -48,27 +49,31 @@ import chess.engine
 import numpy as np
 
 
-
-
 def move_to_index(move):
     """
-    Convert a chess.Move to a unique index (0 to 1967).
-    Each move is represented by:
-        - from_square (0-63): Source square
-        - to_square (0-63): Target square
-        - promotion (0-3): None, Knight, Bishop, Rook, or Queen
+    Convert a chess.Move into a unique index based on the
+    (from_square, to_square, promotion_piece) encoding.
+
+    Index calculation:
+    - from_square: 0–63 (6 bits)
+    - to_square: 0–63 (6 bits)
+    - promotion: 0–3 (2 bits) (0=None, 1=Knight, 2=Bishop, 3=Rook, 4=Queen)
+
+    Args:
+        move (chess.Move): A move object.
 
     Returns:
-        int: A unique index for the move.
+        int: A unique index for the move in the range 0–1967.
     """
     from_square = move.from_square
     to_square = move.to_square
+
+    # Map promotion to an index (0 for no promotion)
     promotion_map = {None: 0, chess.KNIGHT: 1, chess.BISHOP: 2, chess.ROOK: 3, chess.QUEEN: 4}
-    promotion = promotion_map.get(move.promotion, 0)
+    promotion_piece = promotion_map.get(move.promotion, 0)
 
-    # Index calculation: 64 * 64 * 5 = 20480 possibilities, but only legal moves fit in range
-    return from_square * 64 * 5 + to_square * 5 + promotion
-
+    # Calculate the index
+    return from_square * 5 + to_square * 5 + promotion_piece
 
 
 class Node:
@@ -114,29 +119,33 @@ def expand_node(node, model):
     if node.is_fully_expanded():
         return
     for move in node.board.legal_moves:
-        child_board = node.board.copy()
-        child_board.push(move)
-        child_node = Node(child_board, parent=node)
-        node.children.append(child_node)
+        try:
+            child_board = node.board.copy()
+            child_board.push(move)
+            child_node = Node(child_board, parent=node)
+            node.children.append(child_node)
+        except ValueError as e:
+            print(f"Skipping move {move}: {e}")
+            continue
     # Assign prior probabilities to children
     if node.children:
         encoded_board = encode_board(node.board).reshape(1, 8, 8, 12)
         policy_preds, _ = model(encoded_board)
         policy_preds = policy_preds.numpy().flatten()
         for child in node.children:
-            move = child.board.peek()
-            move_idx = move_to_index(move)
+            try:
+                move_idx = move_to_index(child.board.peek())
+                child.prior = policy_preds[move_idx]
+            except ValueError as e:
+                print(e)
+                continue
 
-            # Ensure move_idx is within range
-            if move_idx >= len(policy_preds):
-                print(f"Invalid move index {move_idx} for move {move}")
-                continue  # Skip invalid moves
-
-            child.prior = policy_preds[move_idx]
 
 
 def simulate_game(node, model):
     """Simulate a game from the current node using the model's Value Head."""
+
+
     current_board = node.board.copy()
     while not current_board.is_game_over():
         encoded_board = encode_board(current_board).reshape(1, 8, 8, 12)
@@ -147,6 +156,9 @@ def simulate_game(node, model):
         move_probs = np.array(move_probs) / sum(move_probs)  # Normalize probabilities
         selected_move = np.random.choice(legal_moves, p=move_probs)
         current_board.push(selected_move)
+
+        # display.update(current_board.fen(), b_display)
+
     # Return the game outcome as a value in [-1, 0, 1]
     result = current_board.result()
     if result == "1-0":
@@ -170,7 +182,6 @@ def backpropagate(node, value):
 def run_mcts(board, model, simulations=100, exploration_weight=1.0):
     """Perform Monte Carlo Tree Search to find the best move."""
     root = Node(board)
-
     for _ in range(simulations):
         # Selection: Traverse the tree
         node = root
@@ -250,12 +261,12 @@ value_loss_fn = tf.keras.losses.MeanSquaredError()
 
 def play_self_play_game(model, mcts_simulations):
     import chess  # Use python-chess for game logic
-    from chessboard import display
 
     board = chess.Board()
     game_data = []
 
-    b = display.start(board.fen())
+    b2 = display.start(board.fen())
+
 
     while not board.is_game_over():
         # Generate MCTS probabilities
@@ -265,10 +276,10 @@ def play_self_play_game(model, mcts_simulations):
         # Select move based on MCTS probabilities
         move = select_move(board, mcts_policy)
         board.push(move)
-        display.update(board.fen(), b)
+        display.update(board.fen(), b2)
 
         # Store data
-        game_data.append((board_state, mcts_policy, None))  # Game result filled later
+        game_data.append([board_state, mcts_policy, None])  # Game result filled later
 
     # Assign game results (-1, 0, 1 for loss, draw, win)
     result = board.result()  # e.g., "1-0", "0-1", "1/2-1/2"
