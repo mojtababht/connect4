@@ -6,6 +6,7 @@ from chessboard import display
 
 b_display = display.start('8/8/8/8/8/8/8/8')
 
+
 # Model Definitions
 def get_combined_model():
     input_layer = tf.keras.Input(shape=(8, 8, 12))
@@ -116,7 +117,7 @@ def backpropagate(node, value):
 
 def run_mcts(board, model, simulations=100, exploration_weight=1.0):
     root = Node(board)
-    for _ in range(simulations):
+    for _ in range(dynamic_mcts_simulations(board)):
         node = root
         while node.is_fully_expanded() and node.children:
             node = max(node.children, key=lambda child: child.get_value(exploration_weight))
